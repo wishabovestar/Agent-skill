@@ -57,8 +57,13 @@ def infer(model, prompt, max_tokens=96, temp=0.7):
         return {"error": str(e)}
 
 
-def route(task):
-    """规则路由 (自演化权重前置)"""
+def route(task, context=""):
+    """状态感知路由 (HH 吸收: sprix-sage-router SELF/HANDOFF)
+    SELF: 简单任务自处理 | HANDOFF: 上下文缺失/复杂升级"""
+    # HANDOFF: 上下文缺失 → 升级 (校验专家)
+    ctx_ok = any(k in context for k in ["上下文", "背景", "资料", "完整", "已有"])
+    if context and not ctx_ok and len(task) > 20:
+        return "check"
     if any(k in task for k in ["图像", "图片", "OCR", "视觉", "识别"]):
         return "vision"
     if any(k in task for k in ["界面", "屏幕", "UI", "点击", "操作"]):
