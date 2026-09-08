@@ -36,6 +36,15 @@
 
 ### 运营
 - `vps_promo_autopilot.py` — VPS 推广自动巡航（周一 10:00 cron）
+- `mixer_guard.py` — 8800 混合代理存活守护（/health 探测, R904 修复 404 误判）
+- `local_first_mixer.py` — 已升 v2.4（R902: 三域路由+WHY/CAUSAL+SOFT_ASK 门+qwen2.5:7b 交叉复核）
+
+### 形式化核验（数学五重验证+Lean 裸核心配套 — R903-R908）
+- `frey2_base_check.py` / `frey2_adversarial.py` — Frey 全不变量系统五重基准+对抗审计（R903）
+- `frey3_base_check.py` / `frey3_adversarial.py` — Frey 模 q 约化分类基准+前提必要性对照（R905）
+- `pfr_ruzsa_check.py` — PFR Ruzsa 层（陪集平移/三角不等式/距离, 2400 万实例, R907）
+- `pfr_cover_check.py` — PFR 覆盖结构穷举（F2³ 全 256 子集低倍增覆盖, R907）
+- `lte_homology_check.py` — LTE 同调审计（SES 维数/Euler 语义/Hom 计数/Boolean 环, R908）
 
 ## 推送规范
 - deploy key SSH（GIT_SSH_COMMAND 强制）
