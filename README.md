@@ -46,6 +46,23 @@
 - `pfr_cover_check.py` — PFR 覆盖结构穷举（F2³ 全 256 子集低倍增覆盖, R907）
 - `lte_homology_check.py` — LTE 同调审计（SES 维数/Euler 语义/Hom 计数/Boolean 环, R908）
 
+### 多智能体协作（Swarm 式交接协议 — R1167）
+- `agent_handoff.py` — Swarm 式**显式交接协议**：工具返回 Agent 即交接 + 零配置 DI（按形参名注入）+ 轨迹带 sender；15/15 自检 + 真实角色链实跑
+  - ★ 三处**有意偏离上游**（不照抄）：`max_hops` 默认有限（上游 `inf`）／交接目标须存在于 registry（上游不校验）／检出交接环（上游无）
+
+### 三层验证器与质量（R1143 / R1153 / R1164）
+- `quality_verifier.py` — 层3 质量验证（引证**五档分级**、证据不足时**允许弃权**、台账落盘；14 项自检全绿）
+- `assertion_trend.py` — 层2 断言趋势（AST 级断言计数回归，防"断言被悄悄删除"）
+- `result_offload.py` — 工具结果卸载与翻页（★ `preview` 只读 n+1 字节：blob 2.99MB → 峰值内存 9,366B；19/19 自检 + 计数自证）
+
+### 治理与审计（R1142 / R1164）
+- `skill_spec_audit.py` — 技能规范**三桶审计**（本机扩展 vs 真未知；本地化判读后真违例 0）
+- `skill_activation_audit.py` — 技能激活率审计（列名自适应 + 失败须响亮，不静默吞异常）
+- `kb_index_coverage.py` — 知识库索引覆盖率断言（★ 已修正/反斜杠路径陷阱，曾致"域全 0"假报）
+
+### 研究工具
+- `paper_cand2.py` — 论文候选筛选（★ 修"字段名同义不同"坑：`labs_papers` 的内部 `id` 不是 arXiv id，须正则校验）
+
 ## 推送规范
 - deploy key SSH（GIT_SSH_COMMAND 强制）
 - 随研究迭代更新（R 系列归档→组件落地→推送）
