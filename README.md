@@ -63,6 +63,19 @@
 ### 研究工具
 - `paper_cand2.py` — 论文候选筛选（★ 修"字段名同义不同"坑：`labs_papers` 的内部 `id` 不是 arXiv id，须正则校验）
 
+### 证据链逐环验证（待办落地 — R1169）
+- `layer3_evidence_chain.py` — 层3 证据链**逐环**验证，补 R2 只查"有没有引用"的洞
+  - C1 存在性 / C2 引文真实 / **C3 真支持(LLM)** / **C4 因果必要(LLM)** / C5 制度化
+  - ★ **不假装 C3/C4 可机械判定** —— 只单列为待判项；C1/C2/C5 才是确定性的
+  - 另含 **自洽检查**（reasoning 自陈放弃却给高分 ⇒ 判无效）与 **检测≠遏制**（detected/contained 分开 + gap）
+  - 9/9 自检；★ C5 判别力实测：r1167(有落地件)=True，r1166/r1168(仅材料)=False
+
+### Agent 集群治理
+- `agent_tool_table_audit.py` — 角色工具表**校验**（幽灵工具 / ★「存在≠可用」/ 命名分裂 / 别名）
+  - ★ 抓到真问题：`file`×2、`todo`（应 `todo_list`）、5 处 `web_extract`（存在但本机不可用）
+  - 6/6 自检；★ 区分「名字对但暂时跑不了」与「名字根本不存在」，避免误删正确数据
+- `fix_agent_tools.py` — 按审计结果修复 registry（备份 + 只动明确的点 + 顶层加字段语义说明）
+
 ## 推送规范
 - deploy key SSH（GIT_SSH_COMMAND 强制）
 - 随研究迭代更新（R 系列归档→组件落地→推送）
