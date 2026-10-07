@@ -6,6 +6,7 @@
 
 用法: model_evo_batch.py [模型名...] (默认全部 6 模型)
 """
+# side_effects: [写数据文件]
 import io
 import json
 import os
@@ -14,7 +15,7 @@ import sys
 import time
 import urllib.request
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(os.path.dirname(BASE), "data", "model_evo_batch.json")
 OLLAMA = "http://localhost:11434/api/generate"
@@ -33,9 +34,7 @@ EMBED_ONLY = {"bge-m3:latest"}
 
 
 def infer(model, prompt, temp, top_p, max_tokens=64):
-    body = json.dumps({"model": model, "prompt": prompt, "stream": False,
-                       "max_tokens": max_tokens, "temperature": temp,
-                       "top_p": top_p}).encode()
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False, "options": {"num_predict": max_tokens, "temperature": temp, "top_p": top_p}}).encode()
     req = urllib.request.Request(OLLAMA, body, {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -136,6 +135,11 @@ def main():
         st[m] = {"best_cfg": best, "best_score": b_score,
                  "base_score": base_score, "entropy": ent, "drift": dr,
                  "ts": time.strftime("%Y-%m-%d %H:%M")}
+    if os.path.exists(STATE):
+        if os.path.exists(STATE + ".bak"):
+            try: os.remove(STATE + ".bak")
+            except OSError: pass
+        os.rename(STATE, STATE + ".bak")
     json.dump(st, open(STATE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"\n结果已存: {STATE}")
     print(f"通用性: 任意 Ollama 模型 + 特化任务集 (PROFILES 可扩展)")

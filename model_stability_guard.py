@@ -12,6 +12,7 @@
 
 守护: 检测①② → 避免③
 """
+# side_effects: [写数据文件]
 import io
 import json
 import os
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import time
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(os.path.dirname(BASE), "data", "model_stability.json")
 
@@ -39,8 +40,12 @@ def smoke_ollama():
 def smoke_infer(model="qwen2.5:7b-clean"):
     """推理冒烟: 最小生成测试"""
     import urllib.request
-    body = json.dumps({"model": model, "prompt": "1+1=",
-                       "stream": False, "max_tokens": 8}).encode()
+    body = json.dumps({
+        "model": model,
+        "prompt": "1+1=",
+        "stream": False,
+        "options": {"num_predict": 8}
+    }).encode()
     req = urllib.request.Request("http://localhost:11434/api/generate",
                                  body, {"Content-Type": "application/json"})
     try:

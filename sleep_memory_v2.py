@@ -96,10 +96,17 @@ def cluster_by_jaccard(sessions, threshold=0.15):
 
 # ── 数学优化3: 动态百分位阈值 ──
 def dynamic_threshold(scores, percentile=70):
-    """按分数分布动态确定promote/discard阈值"""
-    if len(scores) < 5:
+    """按分数分布动态确定promote/discard阈值
+
+    ★ 健壮性(2026-09-20 修复):入参可能含 None / 非数值(上游 score 函数可返回 None),
+      原先直接 sorted() 会抛 TypeError: '<' not supported between NoneType and NoneType。
+      现在先过滤非数值再判定;过滤后不足 5 条时回退默认阈值。
+    """
+    nums = [s for s in scores
+            if isinstance(s, (int, float)) and not isinstance(s, bool)]
+    if len(nums) < 5:
         return 0.6, 0.2
-    sorted_s = sorted(scores)
+    sorted_s = sorted(nums)
     n = len(sorted_s)
     promote_t = sorted_s[int(n * percentile / 100)]
     discard_t = sorted_s[int(n * 10 / 100)]

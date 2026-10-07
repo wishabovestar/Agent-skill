@@ -4,6 +4,7 @@
 机制: 3 代 × 4 候选 × 5 任务 = 60 次推理深搜
       校准: 熵/漂移约束 (最优须 漂移<0.5)
 """
+# side_effects: [写数据文件]
 import io
 import json
 import os
@@ -12,7 +13,7 @@ import sys
 import time
 import urllib.request
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 OLLAMA = "http://localhost:11434/api/generate"
 MODEL = "qwen2.5:7b-clean"
 TASKS = ["解释锂离子电池充放电原理。", "什么是 SEI 膜？", "硅碳负极优点？",
@@ -20,9 +21,12 @@ TASKS = ["解释锂离子电池充放电原理。", "什么是 SEI 膜？", "硅
 
 
 def infer(temp, top_p, max_tokens=64):
-    body = json.dumps({"model": MODEL, "prompt": TASKS[0], "stream": False,
-                       "max_tokens": max_tokens, "temperature": temp,
-                       "top_p": top_p}).encode()
+    body = json.dumps({
+        "model": MODEL,
+        "prompt": TASKS[0],
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": temp, "top_p": top_p}
+    }).encode()
     req = urllib.request.Request(OLLAMA, body, {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -119,6 +123,11 @@ def main():
         except Exception:
             pass
     prev[MODEL] = cfg
+    if os.path.exists(path):
+        if os.path.exists(path + ".bak"):
+            try: os.remove(path + ".bak")
+            except OSError: pass
+        os.rename(path, path + ".bak")
     json.dump(prev, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"已写入校准: {path}")
     print(f"推荐: Ollama options temperature={best[1][0]} top_p={best[1][1]}")

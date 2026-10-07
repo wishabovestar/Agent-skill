@@ -4,13 +4,14 @@
 用法: seam (保存当前思维状态) / resume (恢复)
 台账: 不可信拒读 (LedgerReadError 对齐)
 """
+# side_effects: [写数据文件]
 import io
 import json
 import os
 import sys
 import time
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BASE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(os.path.dirname(BASE), "data", "think_ledger_v2.json")
 MAX_HISTORY = 20  # 保留最后 20 版本 (防膨胀, 成本可控)
@@ -28,6 +29,10 @@ def seam(note, detail=""):
     data["history"].append(entry)
     data["history"] = data["history"][-MAX_HISTORY:]  # 截断保留 20
     data["current"] = entry
+    if os.path.exists(LEDGER):
+
+        os.rename(LEDGER, LEDGER + ".bak")
+
     with open(LEDGER, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
     return {"saved": LEDGER, "ts": entry["ts"], "note": note}

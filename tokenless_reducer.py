@@ -7,6 +7,7 @@
   from tokenless_reducer import reduce_output
   out = reduce_output(raw_text)  # 自动场景检测 + 压缩 + 统计
 """
+# side_effects: [写数据文件]
 import io
 import json
 import os
@@ -14,7 +15,7 @@ import re
 import sys
 import time
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATS = os.path.join(os.path.dirname(BASE), "data", "tokenless_stats.jsonl")
 

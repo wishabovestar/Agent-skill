@@ -8,12 +8,14 @@
 
 指标: 网络占比 / 质量保持 / 成本节省
 """
+# side_effects: [写数据文件]
+import os
 import io
 import json
 import sys
 import urllib.request
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 OLLAMA = "http://localhost:11434/api/generate"
 MODEL = "qwen2.5:7b-clean"
 
@@ -32,8 +34,12 @@ def route(task):
 
 # ── ② 本地推理 ──
 def local_infer(task):
-    body = json.dumps({"model": MODEL, "prompt": task,
-                       "stream": False, "max_tokens": 128}).encode()
+    body = json.dumps({
+        "model": MODEL,
+        "prompt": task,
+        "stream": False,
+        "options": {"num_predict": 128}
+    }).encode()
     req = urllib.request.Request(OLLAMA, body, {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=90) as r:

@@ -9,6 +9,7 @@
 ⑥ 瓶颈效应 (bottleneck): 群体骤减后恢复 (弹性)
 ⑦ 基因流 (gene flow): 外部基因引入 (跨域吸收)
 """
+# side_effects: [无写入, 输出]
 import copy
 import io
 import json
@@ -16,7 +17,9 @@ import os
 import random
 import sys
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# [fix 2026-08-22] 模块级 stdout 重配 → 移入 __main__ (沿用 fix_stdout_batch.py 约定):
+# 模块级执行会覆盖调用方已重配的 stdout 包装器 → 旧包装器被 GC 关闭共享 buffer →
+# 调用方首个 print 抛 "ValueError: I/O operation on closed file" (hermes_self_evolve 崩溃根因)
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(os.path.dirname(BASE), "scripts", "evo_engine_state.json")
 
@@ -220,4 +223,5 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     main()

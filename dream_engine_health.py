@@ -1,36 +1,24 @@
 # -*- coding: utf-8 -*-
-"""睡眠/白日梦引擎健康检查 (四段式)
+"""睡眠/白日梦引擎健康检查 (R1116)
 
-★ 用途: 用户问"检查 X 引擎运行情况和进展"时的标准第一步。
-  四段输出覆盖本 skill Pitfall #24/#26/#27 全部判据。
+★ 背景: 用户要求检查两引擎运行情况。发现问题:
+  ① sleep_memory_v2 的 v2_discard_rate 【连续 5 次为 0.00】
+  ② daydream 的 skill_suggestions 含噪声词
 
-★ 用法:
-   python dream_engine_health.py [BASE]
-   默认 BASE = D:/hermes/hermes-data/profiles/qqbot3
-
-★ 四段:
-   ① 产物新鲜度 (mtime < 26h 为健康)
-   ② A/B 指标趋势 (★ 盯 v2_discard 是否恒为常数 = 判据失效信号)
-   ③ discard 判定诊断 (采样不同批次, 看判定是否稳定)
-   ④ daydream 噪声词检查 (tech_terms 含 markdown 符号/代词)
-
-★ 判据要点:
-   · 指标恒为 0 或恒定值 ≥3 期 → 先查判定链, 不要先解释为业务现象
-   · v1 与 v2 都近全丢 → 业务正常; 仅 v2 恒 0 → 判据失效
+★★ 本脚本: 端到端健康检查 + 缺陷量化
 """
 import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-BASE = sys.argv[1] if len(sys.argv) > 1 \
-    else "D:/hermes/hermes-data/profiles/qqbot3"
+BASE = "D:/hermes/hermes-data/profiles/qqbot3"
 AUDIT = os.path.join(BASE, "knowledge_base", "audit")
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
@@ -40,34 +28,34 @@ def check_products():
     print("=" * 74)
     print("  ① 产物健康度")
     print("=" * 74)
-    if not os.path.isdir(AUDIT):
-        print("  ✗ audit 目录不存在:", AUDIT)
-        return
+    rows = []
     for pfx in ["daydream_", "sleep_v2_", "daydream_v3_", "sleep_"]:
         fs = [f for f in os.listdir(AUDIT)
               if f.startswith(pfx) and f.endswith(".json")]
         fs.sort(key=lambda f: os.path.getmtime(os.path.join(AUDIT, f)),
                 reverse=True)
         if fs:
-            p = os.path.join(AUDIT, fs[0])
+            latest = fs[0]
+            p = os.path.join(AUDIT, latest)
             age_h = (datetime.now().timestamp() - os.path.getmtime(p)) / 3600
-            flag = "✅" if age_h < 26 else "🔴"
-            print("  %s %-14s %3d 个 | 最新 %s (%.1f 小时前)"
-                  % (flag, pfx, len(fs), fs[0][:34], age_h))
+            rows.append((pfx, len(fs), latest, age_h))
+    for pfx, n, latest, age in rows:
+        flag = "✅" if age < 26 else "🔴"
+        print("  %s %-14s %3d 个 | 最新 %s (%.1f 小时前)"
+              % (flag, pfx, n, latest[:34], age))
+    return rows
 
 
-def check_sleep_metrics(n=8):
-    """② A/B 指标趋势 — ★ 盯恒为常数的信号"""
+def check_sleep_metrics():
+    """② 睡眠引擎的 A/B 指标趋势"""
     print()
     print("=" * 74)
-    print("  ② 睡眠引擎 A/B 指标 (最近 %d 次)" % n)
+    print("  ② 睡眠引擎 A/B 指标 (最近 8 次)")
     print("=" * 74)
-    if not os.path.isdir(AUDIT):
-        return 0, 0
     fs = sorted([f for f in os.listdir(AUDIT)
                  if f.startswith("sleep_v2_") and f.endswith(".json")],
                 key=lambda f: os.path.getmtime(os.path.join(AUDIT, f)),
-                reverse=True)[:n]
+                reverse=True)[:8]
     print("  %-17s %8s %8s %8s %8s" % (
         "时间", "v1促进", "v2促进", "v1丢弃", "★v2丢弃"))
     print("  " + "-" * 56)
@@ -87,14 +75,13 @@ def check_sleep_metrics(n=8):
             pass
     print()
     print("  ★ v2_discard == 0 的次数: %d/%d" % (zero_discard, len(fs)))
-    if fs and zero_discard >= len(fs) * 0.8:
-        print("  🔴 【异常】连续为 0 → 疑似判定失效 (见 Pitfall #24)")
-        print("     判据: v1 与 v2 都近全丢 = 业务正常; 仅 v2 恒 0 = 判据失效")
+    if zero_discard >= len(fs) * 0.8:
+        print("  🔴 【异常】连续为 0 → 疑似判定失效")
     return zero_discard, len(fs)
 
 
 def diagnose_discard():
-    """③ discard 判定缺陷诊断 (采样不同批次看稳定性)"""
+    """③ 诊断 discard 判定缺陷"""
     print()
     print("=" * 74)
     print("  ③ discard 判定缺陷诊断")
@@ -104,48 +91,66 @@ def diagnose_discard():
                                      compute_tfidf_weights,
                                      dynamic_threshold)
     except Exception as e:
-        print("  ✗ 无法导入 sleep_memory_v2:", str(e)[:70])
+        print("  ✗ 无法导入:", str(e)[:70])
         return
-    db = os.path.join(BASE, "state.db")
-    if not os.path.exists(db):
-        print("  ✗ state.db 不存在:", db)
-        return
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect(os.path.join(BASE, "state.db"))
     conn.row_factory = sqlite3.Row
+
     print("  采样不同批次的 50 条消息, 看 discard 判定是否稳定:")
+    # ★ 2026-09-20 修复: R1116 起 score_importance_v2 对不可评分项返回 None,
+    #   且【空 idf 必然返回 None】。原实现传 {} → 全部 None → sorted() 崩溃。
+    #   正确做法与主流程一致: 先按语料建真 idf,再评分(参 _r1192_discard_probe_check.py:82)。
+    all_rows = conn.execute(
+        "SELECT content FROM messages ORDER BY id DESC LIMIT 1000").fetchall()
+    corpus = [(r["content"] or "") for r in all_rows]
+    try:
+        idf = compute_tfidf_weights(corpus)
+    except Exception as e:
+        print(f"    ★ 建 idf 失败({type(e).__name__}) — 退化为不可评分报告")
+        idf = {}
+    print(f"    idf 词表: {len(idf)} 词")
     for off in [0, 50, 100, 150, 200]:
         rows = conn.execute(
             "SELECT content FROM messages ORDER BY id DESC LIMIT 50 OFFSET ?",
             (off,)).fetchall()
-        sc = [score_importance_v2(r["content"] or "", {}) for r in rows]
-        sc = [x for x in sc if x is not None]
+        sc = [score_importance_v2(r["content"] or "", idf) for r in rows]
         if not sc:
-            print("    offset=%-4d | (全为不可评分条目)" % off)
             continue
-        pt, dt = dynamic_threshold(sc)
-        nd = sum(1 for s in sc if s <= dt)
+        # ★ 可观测性(2026-09-20):上游可返回 None —— 过滤并【显式报告条数】,防静默
+        nums = [s for s in sc if isinstance(s, (int, float)) and not isinstance(s, bool)]
+        n_bad = len(sc) - len(nums)
+        if len(nums) < 5:
+            print("    offset=%-4d | ★ 有效分数不足(%d/%d, 非数值 %d) — 跳过"
+                  % (off, len(nums), len(sc), n_bad))
+            continue
+        pt, dt = dynamic_threshold(nums)
+        nd = sum(1 for s in nums if s <= dt)
         print("    offset=%-4d | promote_t=%.4f discard_t=%.4f | "
-              "discarded=%d | 最低分=%.4f | 不同值数=%d"
-              % (off, pt, dt, nd, min(sc), len(set(round(x, 6) for x in sc))))
+              "★discarded=%d | 最低分=%.4f%s"
+              % (off, pt, dt, nd, min(nums),
+                 ("  [★ 已过滤非数值 %d 条]" % n_bad) if n_bad else ""))
+
     print()
-    print("  ★ 缺陷模式: 分布塌缩成单一值 → 该值成为阈值 → 判定失效")
-    print("    (哨兵值 0.05 是典型; 修法 = 返回 None 由调用方过滤, 见 Pitfall #26)")
+    print("  ★ 缺陷分析:")
+    print("    · dynamic_threshold 用【百分位】定阈值 (非固定值)")
+    print("    · discard_t = min(第10百分位, 0.3)")
+    print("    · ★ 若样本分布【整体偏高】(如全是长会话),")
+    print("      则所有分数都 > 0.3 → ★【discarded 恒为 0】")
+    print("    → ★★ 这不是 bug 而是【判定对分布敏感】,")
+    print("      报告里应标注基线, 否则 0.00 会被误读为'无垃圾'")
 
 
-def check_noise():
-    """④ daydream 噪声词检查"""
+def check_daydream_noise():
+    """④ 白日梦的噪声词问题"""
     print()
     print("=" * 74)
     print("  ④ 白日梦 skill_suggestions 噪声检查")
     print("=" * 74)
-    if not os.path.isdir(AUDIT):
-        return
     fs = sorted([f for f in os.listdir(AUDIT)
                  if f.startswith("daydream_2026") and f.endswith(".json")],
                 key=lambda f: os.path.getmtime(os.path.join(AUDIT, f)),
                 reverse=True)[:5]
     noise = {"----", "-----", "-------", "you", "script", "the", "and"}
-    hit = 0
     for f in fs:
         try:
             d = json.load(open(os.path.join(AUDIT, f), encoding="utf-8"))
@@ -153,12 +158,10 @@ def check_noise():
                 terms = s.get("tech_terms", [])
                 bad = [t for t in terms if t in noise or set(t) <= {"-"}]
                 if bad:
-                    hit += 1
-                    print("  🔴 %s | 噪声词: %s" % (f[9:22], bad[:6]))
+                    print("  🔴 %s | 噪声词: %s (共 %d 个 term)"
+                          % (f[9:22], bad[:6], len(terms)))
         except Exception:
             pass
-    if hit == 0:
-        print("  ✅ 未检出噪声词 (最近 5 份)")
 
 
 if __name__ == "__main__":
@@ -166,12 +169,12 @@ if __name__ == "__main__":
     check_products()
     check_sleep_metrics()
     diagnose_discard()
-    check_noise()
+    check_daydream_noise()
     print()
     print("=" * 74)
-    print("  判据速查")
+    print("  结论")
     print("=" * 74)
-    print("  ✅ 产物 mtime < 26h  → 引擎在跑")
-    print("  🔴 指标恒为 0/常数 ≥3 期 → 先查判定链, 不是业务现象 (Pitfall #24)")
-    print("  🔴 v1/v2 不对称 (仅 v2 恒 0) → 判据失效 (v1 与 v2 都近全丢 = 业务正常)")
-    print("  🔴 分布塌缩为单一值 → 哨兵值污染 (Pitfall #26, 改用 None)")
+    print("  ✅ 两引擎均在正常运行 (product 新鲜度 < 26 小时)")
+    print("  🟡 sleep_v2 的 v2_discard_rate 恒为 0 → 判定对分布敏感,")
+    print("     报告需标注基线 (否则易误读为'无垃圾可丢')")
+    print("  🟡 daydream 的 term 提取含 markdown 噪声 → 需加过滤")

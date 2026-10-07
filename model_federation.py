@@ -14,17 +14,28 @@
 组合模式: 管道 (视觉→文本) / 并行交叉 / 分层预过滤
 自演化: 任务成功率 → 路由权重更新
 """
+# side_effects: [无, 纯路由决策]
 import io
 import json
 import os
 import sys
 import urllib.request
+from gaussian_voi import refine_decision_gaussian, fit_params, record_result
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS = os.path.join(os.path.dirname(BASE), "data", "model_fed_weights.json")
 
-OLLAMA = "http://localhost:11434/api/generate"
+OLLAMA = "http://localhost:11434"
+
+# OpenCode Zen (IS 研究 2026-08-20): 免费模型网关
+# 端点: https://opencode.ai/zen/go/v1/messages (Anthropic 格式)
+# 模型: ox-alpha-free (免费) + minimax-m3/kimi-k3/glm-5.2/deepseek-v4 等
+# 认证: opencode auth login → x-api-key (匿名需账号免费额度)
+ZEN_ENDPOINT = "https://opencode.ai/zen/go/v1/messages"
+ZEN_MODELS = {"ox-alpha-free", "minimax-m3", "kimi-k3", "glm-5.2",
+              "deepseek-v4-flash", "mimo-v2.5"}
+ZEN_KEY = os.environ.get("OPENCODE_ZEN_KEY", "")  # 待 auth login 填充
 MODELS = {
     "text": "qwen2.5:7b-clean",
     "vision": "qwen2.5vl:3b",
@@ -46,10 +57,13 @@ VISION_HINT = "图像|图片|截图|OCR|识别|看这张|视觉"
 
 
 def infer(model, prompt, max_tokens=96, temp=0.7):
-    body = json.dumps({"model": model, "prompt": prompt,
-                       "stream": False, "max_tokens": max_tokens,
-                       "temperature": temp}).encode()
-    req = urllib.request.Request(OLLAMA, body, {"Content-Type": "application/json"})
+    body = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": temp}
+    }).encode()
+    req = urllib.request.Request(OLLAMA + "/api/generate", body, {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=90) as r:
             return json.loads(r.read())["response"].strip()
@@ -57,9 +71,81 @@ def infer(model, prompt, max_tokens=96, temp=0.7):
         return {"error": str(e)}
 
 
+def moe_fuse(answers, weights=None):
+    """复合专家融合 (ID: 加权集成 — 避免 k=2 多数投票陷阱)
+    Condorcet: k≥3 多数投票 or 加权 (高质量专家主导)"""
+    if not answers:
+        return None, {}
+    if len(answers) == 1:
+        return answers[0], {"mode": "single"}
+    if weights is None:
+        weights = [0.6] + [0.4 / (len(answers) - 1)] * (len(answers) - 1)
+    scored = sorted(zip(answers, weights),
+                    key=lambda x: x[1], reverse=True)
+    best = scored[0][0]
+    return best, {"mode": "fused", "k": len(answers),
+                  "weights": [round(w, 2) for _, w in scored]}
+
+
+def classify_problem_type(task):
+    """题型分类器 (2026-08-23, R39 xthink 分题型路由落地)
+
+    基于 A/B 多采样实测 (qwen2.5:7b, n=10):
+      线性多步 (火车类): 详细推理防遗漏 → xthink 档增益 +40pp
+      恒等变换 (代数类): 展开中间步骤出错 → 正常档更好 (90%)
+    返回: "math_linear" (xthink 档) / "math_identity" (正常档)
+          / "math_heavy" (Bonsai n512 档) / None (非数学题)
+    """
+    # 数学题检测: 含数字 + 运算/等号/单位
+    has_num = any(c.isdigit() for c in task)
+    has_op = any(k in task for k in ["+", "-", "*", "/", "=", "km", "km/h", "公里", "米", "距离", "求", "计算", "总"])
+    if not (has_num and has_op):
+        return None
+    # 多段顺序计算 (then/然后/for Xh — 线性步骤) → xthink 档
+    multi_seg = any(k in task for k in ["then", "然后", "for ", "先后", "再", "先", "每个", "各"])
+    # 恒等变换特征: 幂/平方/恒等式 (a²+b² 类 — 展开有害)
+    identity = any(k in task for k in ["^", "平方", "恒等", "²", "³"])
+    # 多约束 (a+b=10, ab=21 — 推导类) → 复杂
+    multi_constraint = task.count(",") >= 1 and "=" in task and has_num
+    if identity and not multi_seg:
+        return "math_identity"   # 恒等/单步代数 → 正常档
+    if multi_constraint and identity:
+        return "math_heavy"      # 多约束推导 → Bonsai n512
+    if multi_seg:
+        return "math_linear"     # 线性多步 → xthink 档
+    return "math_identity"       # 默认数学题 → 正常档
+
+
+def refine_decision(task, est):
+    """Per-task 细化判据 — 高斯信号模型 + 在线参数拟合 (2026-08-23)
+
+    VOI = [s0^2/sqrt(s0^2+sr^2) - s0^2/sqrt(s0^2+se^2)]*psi(n) - c
+    参数: 从路由历史在线拟合 (fit_params — 伯努利σ
+    + EMA 平滑) — 数据不足时用默认 (R39 校准)
+    """
+    base_params = {
+        "n_experts": 4, "sigma0": 0.5, "sigma_r": 0.12, "cost_c": 0.08,
+        "est_noise_map": {"light": 0.15, "text": 0.30, "uncertain": 0.55},
+    }
+    # 在线拟合: 读历史 → 更新参数
+    hist_path = os.path.join(BASE, "data", "routing_history.json")
+    params = base_params
+    try:
+        if os.path.exists(hist_path):
+            with open(hist_path, encoding="utf-8") as f:
+                hist = json.load(f)
+            params = fit_params(hist, base_params)
+    except Exception:
+        params = base_params
+    refine, voi = refine_decision_gaussian(task, est, params)
+    target = "check" if classify_problem_type(task) == "math_heavy" else "text"
+    return refine, target if refine else None
+
+
 def route(task, context=""):
     """状态感知路由 (HH 吸收: sprix-sage-router SELF/HANDOFF)
-    SELF: 简单任务自处理 | HANDOFF: 上下文缺失/复杂升级"""
+    JM 吸收 (Pandora 价值估计成本感知):
+    廉价估计器 (长度/关键词/域特征) 先行 → 只有不确定才升昂贵"""
     # HANDOFF: 上下文缺失 → 升级 (校验专家)
     ctx_ok = any(k in context for k in ["上下文", "背景", "资料", "完整", "已有"])
     if context and not ctx_ok and len(task) > 20:
@@ -68,8 +154,35 @@ def route(task, context=""):
         return "vision"
     if any(k in task for k in ["界面", "屏幕", "UI", "点击", "操作"]):
         return "ui"
-    if len(task) < 12:  # 极短才走轻量 (阈值收紧)
+    # R39: 题型分类器 (数学题 → 分题型路由)
+    ptype = classify_problem_type(task)
+    if ptype == "math_linear":
+        return "xthink"      # 线性多步 → qwen2.5:7b 详细推理档
+    if ptype == "math_heavy":
+        return "check"       # 多约束推导 → 升级 Bonsai n512
+    if ptype == "math_identity":
+        return "text"        # 恒等/单步 → 正常档 (展开有害)
+    # Pandora 模式: 廉价估计器评分 → 阈值路由
+    est = _cheap_estimator(task)
+    if est == "light":
         return "light"
+    # R44: per-task 细化判据 (VOI 近似) — 值得则升级
+    refine, target = refine_decision(task, est)
+    if refine:
+        return target
+    return "text"
+
+
+def _cheap_estimator(task):
+    """Pandora 廉价估计器 (embedding 替代: 规则特征)
+    成本 0.1 → 90% 确定性路由, 10% 不确定升级"""
+    # 简单特征: 短+无专业词 → 轻量
+    if len(task) < 12 and not any(k in task for k in ["研究", "分析", "设计", "优化"]):
+        return "light"
+    # 中等: 有行动词但简短 → 文本
+    # 不确定: 长任务+无明确行动词 → 升级确认
+    if len(task) > 30 and not any(k in task for k in ["请", "分析", "总结", "研究", "对比", "写"]):
+        return "uncertain"
     return "text"
 
 
@@ -103,6 +216,8 @@ def main():
         "图像识别: 描述一张包含猫和桌子的照片",   # 视觉
         "UI 操作: 如何点击登录按钮？",          # UI
         "什么是 SEI 膜？",                    # 轻量
+        "A train at 90km/h for 2h then 60km/h for 1.5h. Total distance?",  # R39: xthink 档
+        "a+b=10, ab=21, a^2+b^2=?",           # R39: 正常档 (恒等)
     ]
 
     stats = {"correct": 0, "total": 0}

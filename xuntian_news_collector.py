@@ -10,8 +10,7 @@
 # side_effects: [写数据文件]
 import os
 import sys, io, os, json, subprocess, datetime, glob
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HORIZON = r"D:\hermes\Horizon"
 KB_NEWS = r"D:\hermes\hermes-data\profiles\qqbot3\knowledge_base\news"
 PY = sys.executable
@@ -87,9 +86,17 @@ def fetch_horizon_items():
                         if len(title) < 12:
                             continue
                         url = ""
-                        for nl in lines[i+1:i+3]:
+                        # ★ 2026-09-26 修复: 原窗口 lines[i+1:i+3] 只覆盖 2 行 ⇒ 上游一旦在标题与
+                        #   URL 之间多出任何一行(或块结构变化), url 恒为空 ⇒ save_to_kb 按 url
+                        #   去重时【静默丢弃】⇒ 落盘写成 []。🟢 实测: 09-25/09-26 连续两天 news
+                        #   落盘 0 条(此前 9-11 条), 而日志仍打印「抓取: 15 条」= 漏采伪装成正常。
+                        #   改为扫到【本块结束】(下一个 ### 即 break), 不会跨块误取下一块的 URL。
+                        for nl in lines[i + 1:i + 12]:
+                            if nl.strip().startswith("###"):
+                                break
                             if nl.strip().startswith("- **URL**"):
                                 url = "http" + nl.strip().split("http", 1)[-1]
+                                break
                         items.append({"source": "anysearch", "title": title[:100],
                                       "url": url, "score": 50})
                         if len(items) >= 12:
@@ -163,9 +170,23 @@ def save_to_kb(items, date_str):
             existing = {x["url"]: x for x in json.load(open(path, encoding="utf-8"))}
         except Exception:
             pass
+    added = 0   # ★ 2026-09-26: 本轮真正新增的条数 (残差判据必须用它, 不能用文件总数)
+    dropped_empty_url = 0   # ★ 2026-09-28: 因 url 为空被丢弃的条数 (horizon 兜底源即此形态)
+    dropped_dup = 0         # ★ 2026-09-28: 因 url 重复被跳过的条数 (正常幂等, 不是缺陷)
     for it in items:
-        if it["url"] and it["url"] not in existing:
+        # ★ 2026-09-28 修复: 原写法 `if it["url"] and it["url"] not in existing` 把
+        #   【空 url】与【重复 url】两种丢弃混为一个静默分支 ⇒ 丢弃量不可见。
+        #   实测当日: horizon 源条目 url 恒为空 ⇒ 抓取 15 / 入库 9, 6 条被吞且零告警。
+        #   ★ 两者必须分开计数: 空 url 丢弃 = 缺陷信号; 重复丢弃 = 幂等正常行为。
+        #     否则「当日文件已有内容时重跑 ⇒ added=0」会被误判成「全部丢弃」而假告警。
+        if not it.get("url"):
+            dropped_empty_url += 1
+            continue
+        if it["url"] not in existing:
             existing[it["url"]] = it
+            added += 1
+        else:
+            dropped_dup += 1
     if os.path.exists(path):
         if os.path.exists(path + ".bak"):
             try: os.remove(path + ".bak")
@@ -173,7 +194,7 @@ def save_to_kb(items, date_str):
         os.rename(path, path + ".bak")
     json.dump(list(existing.values()), open(path, "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
-    return path, len(existing)
+    return path, len(existing), added, dropped_empty_url, dropped_dup
 
 def main():
     days = 1
@@ -185,17 +206,58 @@ def main():
     print(f"日期: {today}")
 
     total_new = 0
+    guard_failed = False   # ★ 2026-09-26 残差守卫标志 (抓到 >0 但入库 ==0 ⇒ 判失败)
     for d in range(days):
         date_str = (today - datetime.timedelta(days=d)).isoformat()
         print(f"\n[{date_str}] 抓取新闻源...")
         items = fetch_horizon_items()
-        print(f"  抓取: {len(items)} 条 (HN + Google News)")
-        path, count = save_to_kb(items, date_str)
-        print(f"  入库: {count} 条 → {os.path.basename(path)}")
+        # ★ 2026-09-28 修复: 原文案硬编码 "(HN + Google News)" —— 本采集器的真实数据源是
+        #   【AnySearch 搜索 + Horizon 摘要兜底】(见模块 docstring), 从不抓 HN/Google News。
+        #   该错误文案已【造成实际误诊】: 2026-09-28 新闻早报据此报出「日志称抓取 15 条
+        #   (HN + Google News), 但落盘只有 9 条且全为 anysearch —— HN/Google News 未持久化」,
+        #   把「文案写错 + horizon 空 url 被丢」误读成「HN/Google News 采集后未落盘」。
+        src_cnt = {}
+        for it in items:
+            s = it.get("source", "?")
+            src_cnt[s] = src_cnt.get(s, 0) + 1
+        src_desc = " + ".join(f"{k} {v} 条" for k, v in sorted(src_cnt.items())) or "0 条"
+        print(f"  抓取: {len(items)} 条 (分源: {src_desc})")
+        path, count, added, dropped, dup = save_to_kb(items, date_str)
+        print(f"  入库: 本轮新增 {added} 条 / 文件共 {count} 条 → {os.path.basename(path)}")
+        if dropped or dup:
+            print(f"  未入库明细: 空 url 丢弃 {dropped} 条 | 重复跳过 {dup} 条"
+                  f" (抓取 {len(items)} = 新增 {added} + 丢弃 {dropped} + 重复 {dup})")
+        # ★ 2026-09-26 修复: 残差守卫。原实现「抓取 N 条 / 入库 0 条」两个数自相矛盾
+        #   仍 exit 0, 文件被写成 [] 而调用方看不出失败 (实测连续两天静默漏采)。
+        #   ★ 判据必须用【本轮新增 added】, 不能用 count(文件总数) —— 否则当日文件
+        #     已有旧内容时, 「本轮全丢」会被旧条目掩盖而漏报。
+        if len(items) > 0 and added == 0 and dropped > 0:
+            print(f"  🔴 残差告警: 本轮抓取 {len(items)} 条, 但新增 0 条 —— "
+                  f"{dropped} 条全部因 url 为空被丢弃")
+            guard_failed = True
+        elif dropped and dropped >= max(1, len(items) // 2):
+            # ★ 2026-09-28 修复: 原守卫只挡【全丢】(added == 0), 掩盖了【部分丢弃】。
+            #   实测当日: 抓取 15 / 入库 9 ⇒ 6 条 (horizon 源, url 恒为空) 被静默丢弃,
+            #   无任何告警 ⇒ 与「漏采伪装成正常」同族。丢弃 ≥ 半数即视为该源整体失效。
+            print(f"  🟠 残差告警: {len(items)} 条中 {dropped} 条因 url 为空被丢弃 (≥ 半数)"
+                  f" —— 该源可能整体失效 (horizon 兜底源的 url 恒为空)")
+            guard_failed = True
+        # ★ 2026-09-28 补漏: 上面两条守卫都以 `len(items) > 0` 为前提 ⇒ 抓取【一条都没
+        #   抓到】时全部落空, 而 save_to_kb 在 existing 为空时会把 `[]` 写进当日文件并
+        #   exit 0 —— 这正是历史上 6 个 2 字节空档文件 (08-26/09-04/09-10/09-15/09-16/
+        #   09-25) 的成因。判据: 同一日 trend_*.json 稳定产出 51 条 ⇒ 「0 条」不可能是
+        #   「当日确实无内容」, 只能是采集失败 (DNS/代理/上游全挂), 必须判失败。
+        if len(items) == 0:
+            print("  🔴 零采集告警: 本轮抓取 0 条 —— 同日 trend 源稳定有产出, "
+                  "故这不是「当日无内容」而是采集失败")
+            guard_failed = True
 
     # 摘要输出
     latest = sorted(glob.glob(os.path.join(KB_NEWS, "news_*.json")))[-1]
     data = json.load(open(latest, encoding="utf-8"))
+    # ★ 2026-09-28 如实标注: `score` 是【来源优先级占位值】(anysearch=50 / horizon=30, 均为硬编码
+    #   常量), 【不是】质量分或相关度分。同源条目 score 全同 ⇒ 该排序对同源内部【无区分力】
+    #   (仅靠 Python 稳定排序保持原序)。下游若把 score 当质量信号使用即为误用。
     data.sort(key=lambda x: x.get("score", 0), reverse=True)
     print(f"\n📰 巡天·新闻速览 ({len(data)} 条, 最新 {os.path.basename(latest)})")
     for it in data[:8]:
@@ -204,5 +266,11 @@ def main():
         score = it.get("score", 0)
         print(f"  [{src}] ({score}) {title}")
 
+    # ★ 2026-09-26: 残差守卫必须转成非零退出码 —— 否则 cron 记 ok 而当日知识静默丢失
+    if guard_failed:
+        print("\n🔴 本次采集判为失败 (残差守卫): 抓到条目但入库 0 条")
+        return 1
+    return 0
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
