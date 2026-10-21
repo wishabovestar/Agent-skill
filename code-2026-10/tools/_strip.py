@@ -1,0 +1,12 @@
+import re,html
+s=open('_p1_2610.23776.html',encoding='utf-8',errors='ignore').read()
+s=re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>','',s)
+s=re.sub(r'(?i)</(p|div|h1|h2|h3|h4|li|tr|figcaption|table|section|math|td|th)>','\n',s)
+s=re.sub(r'(?i)<br\s*/?>','\n',s)
+s=re.sub(r'(?i)</t[dh]>',' | ',s)
+s=re.sub(r'<[^>]+>','',s)
+s=html.unescape(s)
+s=re.sub(r'[ \t]+',' ',s)
+s=re.sub(r'\n\s*\n+','\n\n',s)
+open('_p1_2610.23776.txt','w',encoding='utf-8').write(s)
+print(len(s), s.count('\n'))
